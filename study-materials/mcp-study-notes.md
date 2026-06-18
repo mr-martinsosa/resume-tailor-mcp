@@ -246,6 +246,63 @@ listed, input is forwarded, structured output validates, and bad input is reject
 
 ---
 
-_Next: M3 — the key-less MCP **sampling** path (the server borrows the host's model instead of
-holding its own API key — the most distinctive design point and the cheapest to run). Then M4 —
-README, demo, CI, and push. This file grows a section per milestone._
+---
+
+## M3 — the sampling path (the key-less design)
+
+This is the most distinctive part of the project, and the best interview talking point.
+
+### The idea
+So far the server holds its own `ANTHROPIC_API_KEY` and calls the API directly (Option B). With
+MCP **sampling**, the server instead asks the *client's host* to run the completion — the host
+already has a model and a key, so we borrow it. `server.createMessage(...)` sends a
+`sampling/createMessage` request **back up to the client**, the host runs it, and the text comes
+back. **The server needs no secret of its own.** That's a genuinely MCP-native design.
+
+Note the direction flip: normally the client calls the server's tools. Sampling is the server
+calling *back* to the client. That's why the host has to **declare the `sampling` capability**
+during the handshake — a server can only sample if the host opted in. (Not every host supports it
+— Claude Desktop does; some IDEs don't. That's the documented limitation, and the reason we kept
+the direct-API path too.)
+
+### The tradeoff (this is the whole interview answer)
+The direct-API path (M1/M2) used structured outputs, so the API *enforced* our schema. Sampling
+is a generic text completion — **no schema enforcement.** So the sampling path:
+1. embeds the schema in the prompt (`z.toJSONSchema(schema)` → "return JSON matching this"), and
+2. validates the returned text itself with the same zod schema (`schema.parse(...)`).
+
+So: **direct-API = schema enforced server-side but needs a key; sampling = key-less but we own
+the parsing/validation.** Being able to explain *both* and why you'd pick each is the win. The
+same zod schema now serves four roles — Anthropic output format, MCP outputSchema, the prompt
+instruction, and client-side validation.
+
+### How it plugs in (the seam pays off)
+Because the tools depend on the `*Fn` seam, M3 added **zero changes to any tool**. `sampling.ts`
+just provides another implementation of `TailorFn` / `ScoreFn` / `ExtractFn`. `TAILOR_MODE=sampling`
+switches `main()` to wire those instead of the Anthropic ones. This is the payoff of the
+dependency-injection design from M1 — a whole alternate backend with no tool edits.
+
+### One wiring wrinkle: the chicken-and-egg
+The sampling providers need the server (to call `server.createMessage`), but the server needs the
+providers (to register the tools). Resolved with a **thunk**: `makeSamplingProviders(() => server)`
+takes a function that returns the server, and only calls it when a tool actually runs — by which
+point the server exists. `let server; server = buildServer(makeSamplingProviders(() => server));`
+
+### Testing it without a key (or a real host)
+`test/sampling.test.mjs` stands up a fake host: a `Client` that **declares the sampling
+capability** and registers a `CreateMessageRequestSchema` handler returning canned JSON. So the
+full round-trip runs — tool call → server samples → fake host returns text → server parses +
+validates → `structuredContent` — with no key, no network, no cost. It also asserts the prompt we
+send embeds the JSON schema.
+
+**Be ready to answer:**
+- What is MCP sampling and which way does the request flow? (server → host; the host runs the model. The host must declare the `sampling` capability.)
+- Why would a server use sampling instead of its own API key? (no secret to manage; works with whatever model the host runs; nothing for the server to bill)
+- What do you give up? (no server-side structured-output enforcement — you must validate the returned text yourself)
+- How did you support both without rewriting the tools? (the `*Fn` seam — sampling is just another provider implementation, selected by `TAILOR_MODE`)
+
+---
+
+_Next: M4 — README (with a "what is MCP" intro, a `claude_desktop_config.json` snippet, and a
+demo), CI that runs `tsc --noEmit` + the tests, and push to GitHub. This file grows a section per
+milestone._

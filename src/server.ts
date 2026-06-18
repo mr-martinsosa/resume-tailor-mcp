@@ -23,6 +23,7 @@ import {
   type ScoreFn,
   type ExtractFn,
 } from "./llm/anthropic.js";
+import { makeSamplingProviders } from "./llm/sampling.js";
 
 /** The provider functions the tools depend on. Real ones in prod, fakes in tests. */
 export interface Providers {
@@ -56,15 +57,28 @@ export function buildServer(providers: Providers): McpServer {
 }
 
 async function main() {
-  const server = buildServer({
-    tailor: createAnthropicTailor(),
-    score: createAnthropicScorer(),
-    extract: createAnthropicExtractor(),
-  });
+  // TAILOR_MODE=sampling → key-less, borrow the host's model (Option A).
+  // default ("api")     → call the Anthropic API directly with our own key (Option B).
+  const useSampling = process.env.TAILOR_MODE === "sampling";
+
+  let server: McpServer;
+  if (useSampling) {
+    // The sampling providers need the server (to call back to the host), and
+    // the server needs the providers (to register tools). The thunk defers
+    // reading `server` until a tool actually runs, breaking the cycle.
+    server = buildServer(makeSamplingProviders(() => server));
+  } else {
+    server = buildServer({
+      tailor: createAnthropicTailor(),
+      score: createAnthropicScorer(),
+      extract: createAnthropicExtractor(),
+    });
+  }
+
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // stdout is the JSON-RPC channel — logs must go to stderr.
-  console.error("resume-tailor-mcp running on stdio");
+  console.error(`resume-tailor-mcp running on stdio (mode: ${useSampling ? "sampling" : "api"})`);
 }
 
 // Only run the stdio server when executed directly, not when imported by tests.
