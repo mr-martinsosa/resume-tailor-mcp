@@ -106,5 +106,72 @@ npm run inspect   # opens the MCP Inspector GUI against the live server
 
 ---
 
-_Next: M1 — `tailor_resume`, porting the `tailor.py` prompt into a real tool with validated
-structured output. This file will grow a new section when we get there._
+## M1 — `tailor_resume` (the real tool)
+
+Goal: a tool that takes a resume + a job description and returns a structured tailoring result
+(fit score, matched/missing keywords, truthful bullet rewrites, honest gaps, cover note),
+backed by the Anthropic API. Ported from the toolkit's `tailor.py`, with two upgrades.
+
+### Upgrade 1 — the official SDK, not raw HTTP
+`tailor.py` calls the API with raw `urllib` because it was constrained to Python's standard
+library. This project already has dependencies, so the right choice is the official
+**`@anthropic-ai/sdk`**. It's idiomatic, less error-prone, and a portfolio signal (you know the
+real SDK). Rule of thumb: in a TypeScript/Python project, use the official SDK; only hand-roll
+HTTP when the project genuinely forbids dependencies.
+
+### Upgrade 2 — structured outputs, not "return JSON" + parse
+`tailor.py` asks the model to "return JSON matching this schema" and then `JSON.parse`s it,
+hoping the model complied. We instead use **structured outputs**: `client.messages.parse()` with
+`output_config: { format: zodOutputFormat(TailoringResultSchema) }`. The API *enforces* the
+schema and the SDK hands back a typed, validated `parsed_output`. No parsing, no "what if it
+returns prose around the JSON" failure mode.
+
+The same zod schema (`TailoringResultSchema`) is reused three ways — this is the elegant part:
+1. as the **Anthropic structured-output format** (forces the model's shape),
+2. as the **MCP tool `outputSchema`** (so MCP clients get validated `structuredContent`), and
+3. as the **TypeScript type** via `z.infer`.
+
+### The dependency seam (why this is testable without a key)
+The tool doesn't call Anthropic directly. It calls an injected `TailorFn`
+(`(input) => Promise<TailoringResult>`). `server.ts`'s `buildServer(tailor)` takes that function
+as a parameter; `main()` passes the real Anthropic-backed one, and the **test passes a fake**.
+That seam is why `test/tailor.test.mjs` can exercise the entire MCP path — schema validation,
+the call, structured output — with **no API key, no network, and no cost**. It's also exactly
+where the MCP-sampling path (M3) will slot in: another `TailorFn` implementation.
+
+> This seam is the answer to "how did you test an LLM tool without spending money?" — a great
+> thing to be able to say in an interview. The fake also makes the test deterministic.
+
+### Files
+- `src/schema.ts` — the zod schemas (input + result), the system prompt, the user-prompt builder.
+- `src/llm/anthropic.ts` — `createAnthropicTailor()` returns a `TailorFn` using `messages.parse`.
+  The client is built lazily, so the server still boots and lists tools without a key.
+- `src/tools/tailorResume.ts` — registers the tool; returns `structuredContent` + a text mirror.
+- `src/server.ts` — now `buildServer(tailor)` (testable) + a guarded `main()` that only runs the
+  stdio server when the file is executed directly (so importing it in a test doesn't start it).
+
+### Two things that bit us (worth understanding)
+- **zod v3 vs v4.** The SDK's `zodOutputFormat` helper is typed for **zod v4**. With zod v3 the
+  build threw `TS2345` and `parsed_output` inferred as `{}`. Fix: move the project to zod v4 (the
+  MCP SDK accepts `^3.25 || ^4.0`, and our zod usage is identical across both). Lesson: when two
+  libraries share a schema library, their major versions have to line up.
+- **`max_tokens` / refusal handling.** We set `max_tokens: 4096` (the result is small) and check
+  `stop_reason === "refusal"` and a null `parsed_output` before trusting the output. On Opus 4.8
+  a refusal is a successful HTTP 200 with empty content — reading it blindly would crash.
+
+### Cost note (important)
+Building, `tsc`, and the tests cost **nothing** — the tests use the injected fake. The tool only
+calls the API (and bills) when actually invoked with a real `ANTHROPIC_API_KEY`, which is a
+deliberate, user-initiated action. The cheaper-still design is M3 (sampling), where the server
+borrows the host's model and holds no key of its own.
+
+**Be ready to answer:**
+- Why structured outputs over "return JSON"? (API enforces the schema; no parse-and-pray)
+- Why the official SDK over `fetch`? (idiomatic, typed, handles retries/errors; raw HTTP only when deps are forbidden)
+- How did you test an API-calling tool for free? (the `TailorFn` seam + an injected fake over an in-memory transport)
+- What does `messages.parse` return and what do you check? (`parsed_output`, plus `stop_reason` for refusals)
+
+---
+
+_Next: M2 — `score_fit` + `extract_keywords` (reuse the scoring rubric), then M3 — the
+key-less MCP **sampling** path. This file grows a section per milestone._

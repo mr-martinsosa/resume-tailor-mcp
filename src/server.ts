@@ -2,48 +2,52 @@
 /**
  * resume-tailor-mcp — an MCP server for ethical resume tailoring.
  *
- * M0: the scaffold. Boots a server over stdio and registers a single `ping`
- * tool so we can prove the protocol handshake works before adding real logic.
+ * buildServer() assembles the server and its tools, taking the TailorFn as a
+ * parameter so tests can inject a fake (no API key, no network). main() wires
+ * in the real Anthropic-backed tailor and runs over stdio. The import.meta
+ * guard means importing this file (as the test does) does NOT start a server.
  */
+import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
+import { registerTailorResume } from "./tools/tailorResume.js";
+import { createAnthropicTailor, type TailorFn } from "./llm/anthropic.js";
 
-// The server object holds our identity and the tools/resources we expose.
-const server = new McpServer({
-  name: "resume-tailor-mcp",
-  version: "0.1.0",
-});
+export function buildServer(tailor: TailorFn): McpServer {
+  const server = new McpServer({ name: "resume-tailor-mcp", version: "0.1.0" });
 
-// A tool is a function the client (Claude, an IDE, the Inspector) can call.
-// registerTool(name, config, handler):
-//   - inputSchema is a map of zod schemas; the SDK turns it into the JSON
-//     Schema the client sees, and validates incoming args against it.
-//   - the handler returns a result whose `content` is what the client receives.
-server.registerTool(
-  "ping",
-  {
-    title: "Ping",
-    description: "Health check. Returns 'pong', echoing an optional message.",
-    inputSchema: {
-      message: z.string().optional().describe("Optional text to echo back"),
+  // Health check — proves the handshake without needing the LLM.
+  server.registerTool(
+    "ping",
+    {
+      title: "Ping",
+      description: "Health check. Returns 'pong', echoing an optional message.",
+      inputSchema: {
+        message: z.string().optional().describe("Optional text to echo back"),
+      },
     },
-  },
-  async ({ message }) => ({
-    content: [{ type: "text", text: message ? `pong: ${message}` : "pong" }],
-  }),
-);
+    async ({ message }) => ({
+      content: [{ type: "text", text: message ? `pong: ${message}` : "pong" }],
+    }),
+  );
+
+  registerTailorResume(server, tailor);
+  return server;
+}
 
 async function main() {
-  // stdio transport: the client launches this process and talks JSON-RPC over
-  // stdin/stdout. That means stdout is reserved for the protocol — anything we
-  // want to log has to go to stderr, or it corrupts the message stream.
+  const server = buildServer(createAnthropicTailor());
   const transport = new StdioServerTransport();
   await server.connect(transport);
+  // stdout is the JSON-RPC channel — logs must go to stderr.
   console.error("resume-tailor-mcp running on stdio");
 }
 
-main().catch((err) => {
-  console.error("Fatal error starting server:", err);
-  process.exit(1);
-});
+// Only run the stdio server when executed directly, not when imported by tests.
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  main().catch((err) => {
+    console.error("Fatal error starting server:", err);
+    process.exit(1);
+  });
+}

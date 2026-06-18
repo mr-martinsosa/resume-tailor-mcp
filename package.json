@@ -10,13 +10,14 @@
     "dev": "tsx src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "npm run build && node test/smoke.mjs",
+    "test": "npm run build && node test/smoke.mjs && node test/tailor.test.mjs",
     "inspect": "npx @modelcontextprotocol/inspector tsx src/server.ts"
   },
   "license": "MIT",
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
-    "zod": "^3.23.0"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
