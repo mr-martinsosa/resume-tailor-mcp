@@ -1,0 +1,25 @@
+{
+  "name": "resume-tailor-mcp",
+  "version": "0.1.0",
+  "description": "An MCP server for ethical resume tailoring.",
+  "type": "module",
+  "bin": {
+    "resume-tailor-mcp": "dist/server.js"
+  },
+  "scripts": {
+    "dev": "tsx src/server.ts",
+    "build": "tsc",
+    "start": "node dist/server.js",
+    "test": "npm run build && node test/smoke.mjs",
+    "inspect": "npx @modelcontextprotocol/inspector tsx src/server.ts"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
