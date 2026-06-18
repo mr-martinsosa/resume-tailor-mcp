@@ -303,6 +303,29 @@ send embeds the JSON schema.
 
 ---
 
-_Next: M4 — README (with a "what is MCP" intro, a `claude_desktop_config.json` snippet, and a
-demo), CI that runs `tsc --noEmit` + the tests, and push to GitHub. This file grows a section per
-milestone._
+---
+
+## M4 — polish & ship
+
+Goal: make it presentable and public.
+
+- **README.md** — a 15-second "what is MCP", the three tools + the won't-fabricate promise, the
+  two backends, a quick start, a copy-paste `claude_desktop_config.json` block (for both `api`
+  and `sampling` modes), the project layout, and a design-notes section. This is what a recruiter
+  actually reads — lead with what it is and how to run it.
+- **LICENSE** — MIT.
+- **CI** (`.github/workflows/ci.yml`) — on push/PR: `npm ci`, `npx tsc --noEmit` (typecheck), then
+  `npm test`. Because the tests use fakes, CI runs green with no secrets configured. A green CI
+  badge is a small but real credibility signal on a public repo.
+- **Push** to GitHub as a public repo.
+
+**Be ready to answer:**
+- How does CI test an LLM server without an API key in the runner? (the provider seam again — the tests inject fakes, so no secret is needed)
+- What's in the README for someone who's never seen MCP? (the 15-second intro + the Claude Desktop config snippet so they can run it)
+
+---
+
+## Where this left off / next ideas
+Done: M0–M4 — a working, tested, documented, public MCP server with two backends. Possible next
+steps if you want to keep going: a `diff_bullets` tool (before/after audit of rewrites), resources
+(expose saved resume variants as `resume://` resources), or a short demo GIF in the README.
