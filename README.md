@@ -1,71 +1,73 @@
 # resume-tailor-mcp
 
-An [MCP](https://modelcontextprotocol.io) server that tailors a resume to a job posting without
-making anything up. It gives any MCP client (Claude Desktop, an IDE, the MCP Inspector) three
-tools, and it can run two ways: against the Anthropic API with your own key, or with no key at
-all by borrowing the host's model through MCP sampling.
-
-I wrote it from scratch to learn the protocol properly. Every line is mine, and there's a
-walkthrough of the design and the MCP concepts in [`study-materials/`](study-materials/) if you
-want the reasoning behind it.
+An [MCP](https://modelcontextprotocol.io) server that tailors a resume to a job posting. It
+exposes three tools to any MCP client (Claude Desktop, an IDE, the MCP Inspector) and supports
+two backends: the Anthropic API with an API key, or key-less operation using MCP sampling to
+borrow the host's model.
 
 ## What MCP is
 
-MCP (Model Context Protocol) is a standard way to give an LLM access to tools and data. A host
-(like Claude Desktop) embeds the model, a server (this project) exposes capabilities, and the two
-talk over JSON-RPC. The server has no model of its own; it just answers requests.
+MCP (Model Context Protocol) is a standard for giving an LLM access to tools and data. A host
+(such as Claude Desktop) embeds the model, a server such as this one exposes capabilities, and
+the two communicate over JSON-RPC. The server has no model of its own and only answers requests.
 
-## What it does
+## Tools
 
-Three tools, plus a `ping` health check:
+A `ping` health check, plus three tools:
 
 | Tool | Input | Returns |
 |---|---|---|
-| `tailor_resume` | resume + job description | fit score, matched/missing keywords, truthful rewrites of your existing bullets, honest gaps, a cover note |
-| `score_fit` | resume + job description | a 1–5 fit score with a recommendation, plus a separate ghost-job legitimacy read |
+| `tailor_resume` | resume + job description | fit score, matched/missing keywords, rewrites of existing bullets, gaps, a cover note |
+| `score_fit` | resume + job description | a 1-5 fit score with a recommendation, plus a separate ghost-job legitimacy read |
 | `extract_keywords` | job description | the ATS keywords a posting wants, split into must-have and nice-to-have |
 
-The system prompt's hard rule is that it rephrases and re-emphasizes what's already on the resume
-and flags real gaps instead of inventing experience to fill them. That constraint is the point of
-the tool, not a disclaimer on it.
+The system prompt constrains the model to rephrase and re-emphasize existing resume content and
+to flag genuine gaps rather than fabricate experience.
 
-## Two backends
+## Backends
 
-You pick the backend with the `TAILOR_MODE` env var:
+The backend is selected with the `TAILOR_MODE` environment variable:
 
-- `api` (default) calls the Anthropic API with your `ANTHROPIC_API_KEY`. It uses structured
-  outputs, so the model is constrained to return the exact schema.
-- `sampling` holds no key. It asks the host to run the completion via MCP sampling
-  (`createMessage`), then validates the returned text against the same schema itself. This only
-  works with hosts that support sampling (Claude Desktop does).
+- `api` (default): calls the Anthropic API with an `ANTHROPIC_API_KEY`, using structured outputs
+  so the model is constrained to the response schema.
+- `sampling`: holds no key. It requests a completion from the host via MCP sampling
+  (`createMessage`) and validates the returned text against the same schema. Requires a host that
+  supports sampling, such as Claude Desktop.
 
-The tools are identical either way; the backend is swapped behind a small seam. The tradeoff
-between the two is in [Design notes](#design-notes) below.
+The tools are identical across both backends. See [Design notes](#design-notes) for the tradeoff.
 
-## Quick start
+## Requirements
+
+- Node 20 or newer.
+- The `api` backend requires an `ANTHROPIC_API_KEY`.
+- The `sampling` backend requires a host that supports MCP sampling.
+
+## Installation
 
 ```bash
 git clone https://github.com/mr-martinsosa/resume-tailor-mcp.git
 cd resume-tailor-mcp
 npm install
-npm test          # builds, then runs the test suite (no API key needed)
 npm run build     # compile TypeScript to dist/
 ```
 
-The tests use injected fakes, so the whole suite runs with no API key, no network, and no cost.
+## Usage
 
-### Try it in the MCP Inspector
+Run the test suite (uses injected fakes, so no API key, network, or cost):
 
 ```bash
-npm run inspect   # opens the Inspector against the live server
+npm test
 ```
 
-You'll see the tool list and can call `ping` (or the others, once you provide a key).
+Inspect the live server with the MCP Inspector:
 
-## Wire it into Claude Desktop
+```bash
+npm run inspect
+```
 
-Run `npm run build` first so `dist/server.js` exists, then add this to your
-`claude_desktop_config.json` using an absolute path:
+### Claude Desktop
+
+After `npm run build`, add the following to `claude_desktop_config.json`, using an absolute path:
 
 ```json
 {
@@ -79,8 +81,7 @@ Run `npm run build` first so `dist/server.js` exists, then add this to your
 }
 ```
 
-To run it without a key, drop the `ANTHROPIC_API_KEY` and set the mode instead. The host's own
-model does the work:
+For key-less operation, omit `ANTHROPIC_API_KEY` and set the mode instead:
 
 ```json
 "env": { "TAILOR_MODE": "sampling" }
@@ -90,41 +91,31 @@ model does the work:
 
 ```
 src/
-  server.ts            boots the stdio server; picks the backend by TAILOR_MODE
-  schema.ts            zod schemas + prompts (one schema per tool, reused everywhere)
-  tools/               one file per tool: registers it, calls the injected provider
+  server.ts            boots the stdio server; selects the backend by TAILOR_MODE
+  schema.ts            zod schemas and prompts (one schema per tool)
+  tools/               one file per tool: registration and provider call
   llm/
-    anthropic.ts       the direct-API backend (structured outputs)
-    sampling.ts        the key-less backend (MCP sampling + client-side validation)
-test/                  smoke + tool + sampling tests, all run without a key
+    anthropic.ts       direct-API backend (structured outputs)
+    sampling.ts        key-less backend (MCP sampling + client-side validation)
+test/                  smoke, tool, and sampling tests, all run without a key
 study-materials/       notes on MCP and the design
 ```
 
 ## Design notes
 
-A few decisions worth calling out:
-
-Structured outputs instead of "return JSON". The API backend uses `messages.parse` with
-`zodOutputFormat`, so the model is constrained to the schema and the SDK hands back a validated,
-typed object. There's no string-parsing step that might fail on malformed output.
-
-One schema per tool, reused everywhere. Each tool's zod schema is the Anthropic output format,
-the MCP `outputSchema`, the prompt instruction in sampling mode, the client-side validator, and
-the TypeScript type. Define it once, use it five ways.
-
-A provider seam. The tools don't call the LLM directly. They call an injected function
-(`TailorFn` / `ScoreFn` / `ExtractFn`). That's what lets the tests run with fakes and no key, and
-it's why adding the sampling backend didn't require touching any tool.
-
-Sampling vs. direct-API. The direct path enforces the schema on the server side but needs a key.
-Sampling needs no key because it borrows the host's model, but it gives up that server-side
-enforcement, so the server validates the returned text itself. Both are supported on purpose.
-
-## Requirements
-
-Node 20+. The `api` backend also needs an `ANTHROPIC_API_KEY`. The `sampling` backend needs a
-host that supports MCP sampling.
+- Structured outputs: the API backend uses `messages.parse` with `zodOutputFormat`, so the model
+  is constrained to the schema and the SDK returns a validated, typed object with no manual
+  parsing step.
+- Single schema per tool: each tool's zod schema serves as the Anthropic output format, the MCP
+  `outputSchema`, the prompt instruction in sampling mode, the client-side validator, and the
+  TypeScript type.
+- Provider seam: tools call an injected function (`TailorFn`, `ScoreFn`, `ExtractFn`) rather than
+  the LLM directly. Tests inject fakes (so no key is needed), and the sampling backend was added
+  without changing any tool.
+- Backend tradeoff: the direct-API backend enforces the schema server-side but requires a key;
+  the sampling backend is key-less but gives up server-side enforcement, so it validates the
+  returned text itself.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
