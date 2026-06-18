@@ -81,3 +81,99 @@ ${input.job_description}
 
 Tailor the resume to this posting and produce the structured result.`;
 }
+
+// ---------------------------------------------------------------------------
+// M2: score_fit — a 1-5 fit score + a ghost-job legitimacy read.
+// Ports the toolkit's scoring_rubric.md. Reuses TailorInputSchema (resume + JD).
+// ---------------------------------------------------------------------------
+
+export const ScoreResultSchema = z.object({
+  global_score: z
+    .number()
+    .min(1)
+    .max(5)
+    .describe("Weighted overall 1-5 fit score."),
+  dimensions: z
+    .object({
+      match_to_resume: z.number().min(1).max(5),
+      goal_alignment: z.number().min(1).max(5),
+      comp: z.number().min(1).max(5),
+      culture_remote: z.number().min(1).max(5),
+    })
+    .describe("Per-dimension 1-5 scores."),
+  archetype: z
+    .string()
+    .describe("Closest role archetype, e.g. 'Full-stack + AI' or 'LLMOps'."),
+  recommendation: z
+    .enum(["apply_now", "apply", "maybe", "skip"])
+    .describe("Action threshold derived from the score."),
+  legitimacy_tier: z
+    .enum(["high_confidence", "proceed_with_caution", "suspicious"])
+    .describe("Ghost-job legitimacy read — separate from the fit score."),
+  rationale: z
+    .string()
+    .describe("A short paragraph justifying the score and the legitimacy tier."),
+});
+
+export type ScoreResult = z.infer<typeof ScoreResultSchema>;
+
+export const SCORE_SYSTEM_PROMPT = `You score how well a candidate fits a job posting, on a 1-5 scale, and separately judge whether the posting looks like a real, active opening.
+
+Fit score (weighted average of four dimensions, each 1-5):
+- match_to_resume (35%): skills/experience the JD asks for vs. what the resume can defend.
+- goal_alignment (25%): location/remote eligibility, level, and role family.
+- comp (20%): 5 = top quartile for the level, 3 = at market, 1 = well below.
+- culture_remote (20%): remote policy, stability, growth, team signals.
+Map the global score to a recommendation: 4.5+ apply_now, 4.0-4.4 apply, 3.5-3.9 maybe, <3.5 skip.
+
+Legitimacy tier is a SEPARATE judgment (it does not change the fit score): high_confidence, proceed_with_caution, or suspicious. Present signals, never accusations — every concerning signal has innocent explanations. Default to proceed_with_caution when unsure.`;
+
+export function buildScorePrompt(input: TailorInput): string {
+  return `Here is the candidate's resume:
+<resume>
+${input.resume}
+</resume>
+
+Here is the job description:
+<job_description>
+${input.job_description}
+</job_description>
+
+Score the fit and judge the posting's legitimacy.`;
+}
+
+// ---------------------------------------------------------------------------
+// M2: extract_keywords — the ATS keywords a posting wants, grouped.
+// Takes only the job description.
+// ---------------------------------------------------------------------------
+
+export const ExtractInputSchema = {
+  job_description: z
+    .string()
+    .min(1)
+    .describe("The full text of the job posting."),
+};
+
+export type ExtractInput = { job_description: string };
+
+export const ExtractResultSchema = z.object({
+  must_have: z
+    .array(z.string())
+    .describe("Required skills/technologies/keywords the posting emphasizes."),
+  nice_to_have: z
+    .array(z.string())
+    .describe("Preferred-but-not-required keywords."),
+});
+
+export type ExtractResult = z.infer<typeof ExtractResultSchema>;
+
+export const EXTRACT_SYSTEM_PROMPT = `You extract the keywords an applicant-tracking system would key on from a job posting. Separate genuine requirements from nice-to-haves. Use the posting's own terminology. Do not invent keywords that aren't supported by the text.`;
+
+export function buildExtractPrompt(input: ExtractInput): string {
+  return `Here is the job description:
+<job_description>
+${input.job_description}
+</job_description>
+
+Extract the must-have and nice-to-have keywords.`;
+}

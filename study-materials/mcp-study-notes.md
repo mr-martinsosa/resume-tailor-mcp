@@ -131,16 +131,35 @@ The same zod schema (`TailoringResultSchema`) is reused three ways — this is t
 2. as the **MCP tool `outputSchema`** (so MCP clients get validated `structuredContent`), and
 3. as the **TypeScript type** via `z.infer`.
 
-### The dependency seam (why this is testable without a key)
-The tool doesn't call Anthropic directly. It calls an injected `TailorFn`
-(`(input) => Promise<TailoringResult>`). `server.ts`'s `buildServer(tailor)` takes that function
-as a parameter; `main()` passes the real Anthropic-backed one, and the **test passes a fake**.
-That seam is why `test/tailor.test.mjs` can exercise the entire MCP path — schema validation,
-the call, structured output — with **no API key, no network, and no cost**. It's also exactly
-where the MCP-sampling path (M3) will slot in: another `TailorFn` implementation.
+### The dependency seam (why this is testable without a key) — dependency injection
 
-> This seam is the answer to "how did you test an LLM tool without spending money?" — a great
-> thing to be able to say in an interview. The fake also makes the test deterministic.
+This is **dependency injection**, and it's worth understanding deeply because it's the answer
+to "how did you test an LLM-calling tool without spending money?"
+
+Think about what the tool *needs*: "something that turns a resume + JD into a result." The naive
+design has the tool reach out to Anthropic itself. Instead, the tool **receives that capability
+as a parameter** — a function, the `TailorFn` (`(input) => Promise<TailoringResult>`).
+
+```
+buildServer(providers)   ←  tools call whatever functions they're handed
+   │
+   ├── production:  main() hands them the real createAnthropic*()  → calls the API ($)
+   └── test:        the test hands them fakes  → return canned data instantly (free)
+```
+
+The tool just does `await tailor(input)` and wraps the result. **It cannot tell whether it got
+the real API or a fake.** So the test hands it a fake returning hardcoded data, and still
+exercises *all the tool's real logic* — MCP registration, input validation, wrapping into
+`structuredContent` + text — while the one piece that would cost money (the API call) is swapped
+out.
+
+Analogy: to test a coffee machine's buttons and water flow, plug in a fake grinder that spits
+out pre-ground coffee. You test everything except the grinding. The seam is the socket the
+grinder plugs into.
+
+That single choice is why `test/tools.test.mjs` runs with **no key, no network, and $0** — and
+it's exactly where M3's MCP-sampling path will plug in: just another implementation of the same
+`*Fn` type. The fake also makes the test deterministic (the real model would vary run to run).
 
 ### Files
 - `src/schema.ts` — the zod schemas (input + result), the system prompt, the user-prompt builder.
@@ -173,5 +192,60 @@ borrows the host's model and holds no key of its own.
 
 ---
 
-_Next: M2 — `score_fit` + `extract_keywords` (reuse the scoring rubric), then M3 — the
-key-less MCP **sampling** path. This file grows a section per milestone._
+---
+
+## M2 — `score_fit` + `extract_keywords` (two more tools)
+
+Goal: round out the tool surface. `score_fit` gives a 1-5 fit score + a ghost-job legitimacy
+read (ported from the toolkit's `scoring_rubric.md`); `extract_keywords` pulls the ATS keywords a
+posting wants, grouped into must-have / nice-to-have. Both follow the exact pattern M1
+established — which is the point: once the shape is right, new tools are cheap.
+
+### The DRY refactor (a small but real design improvement)
+M1's `createAnthropicTailor` had the whole `messages.parse` call inline. Adding two more tools
+that do the same thing — system prompt + user prompt + structured output — would mean copying
+that boilerplate three times. So `anthropic.ts` now has one private helper:
+
+```
+runStructured(schema, system, user)  →  Promise<z.infer<schema>>
+```
+
+Each tool's provider is then a one-liner: `runStructured(<its schema>, <its system prompt>,
+<its user prompt>)`. The generic `<S extends z.ZodType>` means the return type is inferred from
+whichever schema you pass — `runStructured(ScoreResultSchema, ...)` returns a `ScoreResult`,
+`runStructured(ExtractResultSchema, ...)` returns an `ExtractResult`, all type-checked. One place
+to change if the API call ever needs to change (retries, caching, a different model).
+
+### `buildServer` now takes a `Providers` object
+M1 passed a single `tailor` function. With three tools, `buildServer({ tailor, score, extract })`
+takes a small object instead of three positional args — clearer at the call site and easy to
+extend. `main()` fills it with the real `createAnthropic*()` implementations; the test fills it
+with three fakes. Same seam, three sockets.
+
+### Anatomy of a tool (now a repeatable recipe)
+Each tool is four small pieces, and adding one is mechanical:
+1. **Schema(s)** in `schema.ts` — a zod input shape (if different) and a zod result object.
+2. **Prompt(s)** in `schema.ts` — a system prompt (the rules) and a user-prompt builder.
+3. **A provider** in `anthropic.ts` — one line over `runStructured`, returning a typed `*Fn`.
+4. **A registration** in `tools/<name>.ts` — `registerTool(name, {description, inputSchema,
+   outputSchema}, handler)` where the handler calls the injected `*Fn` and returns
+   `structuredContent` + a text mirror.
+
+That repeatability is itself a design signal: the abstraction is at the right altitude when the
+Nth instance is boring to add.
+
+### Tests
+`test/tools.test.mjs` (renamed from `tailor.test.mjs`) now drives all three tools over the
+in-memory transport with three fakes — still no key, no network, no cost. 14 checks: each tool is
+listed, input is forwarded, structured output validates, and bad input is rejected.
+
+**Be ready to answer:**
+- Why factor out `runStructured`? (DRY — one place owns the API-call mechanics; tools differ only by schema + prompts)
+- How does the generic keep types? (`<S extends z.ZodType>` infers the result type from the schema you pass)
+- Why a `Providers` object instead of positional args? (clearer, order-independent, easy to extend as tools grow)
+
+---
+
+_Next: M3 — the key-less MCP **sampling** path (the server borrows the host's model instead of
+holding its own API key — the most distinctive design point and the cheapest to run). Then M4 —
+README, demo, CI, and push. This file grows a section per milestone._

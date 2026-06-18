@@ -2,19 +2,36 @@
 /**
  * resume-tailor-mcp — an MCP server for ethical resume tailoring.
  *
- * buildServer() assembles the server and its tools, taking the TailorFn as a
- * parameter so tests can inject a fake (no API key, no network). main() wires
- * in the real Anthropic-backed tailor and runs over stdio. The import.meta
- * guard means importing this file (as the test does) does NOT start a server.
+ * buildServer() assembles the server and its tools, taking the provider
+ * functions as a parameter so tests can inject fakes (no API key, no network).
+ * main() wires in the real Anthropic-backed implementations and runs over
+ * stdio. The import.meta guard means importing this file (as the tests do) does
+ * NOT start a server.
  */
 import { fileURLToPath } from "node:url";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { registerTailorResume } from "./tools/tailorResume.js";
-import { createAnthropicTailor, type TailorFn } from "./llm/anthropic.js";
+import { registerScoreFit } from "./tools/scoreFit.js";
+import { registerExtractKeywords } from "./tools/extractKeywords.js";
+import {
+  createAnthropicTailor,
+  createAnthropicScorer,
+  createAnthropicExtractor,
+  type TailorFn,
+  type ScoreFn,
+  type ExtractFn,
+} from "./llm/anthropic.js";
 
-export function buildServer(tailor: TailorFn): McpServer {
+/** The provider functions the tools depend on. Real ones in prod, fakes in tests. */
+export interface Providers {
+  tailor: TailorFn;
+  score: ScoreFn;
+  extract: ExtractFn;
+}
+
+export function buildServer(providers: Providers): McpServer {
   const server = new McpServer({ name: "resume-tailor-mcp", version: "0.1.0" });
 
   // Health check — proves the handshake without needing the LLM.
@@ -32,12 +49,18 @@ export function buildServer(tailor: TailorFn): McpServer {
     }),
   );
 
-  registerTailorResume(server, tailor);
+  registerTailorResume(server, providers.tailor);
+  registerScoreFit(server, providers.score);
+  registerExtractKeywords(server, providers.extract);
   return server;
 }
 
 async function main() {
-  const server = buildServer(createAnthropicTailor());
+  const server = buildServer({
+    tailor: createAnthropicTailor(),
+    score: createAnthropicScorer(),
+    extract: createAnthropicExtractor(),
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // stdout is the JSON-RPC channel — logs must go to stderr.
